@@ -231,10 +231,55 @@ class Game2048Env(gym.Env):
         # If the simulated board is different from the current board, the move is legal
         return not np.array_equal(self.board, temp_board)
 
+import numpy as np
+
+# Load weights from exported file
+def load_weights(path="2048_weights.txt"):
+    weights = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"): continue
+            weights.append(float(line.strip()))
+    return np.array(weights)
+
+# Assume the pattern is 6-tuple {0, 1, 2, 3, 4, 5}
+def evaluate_board(board, weights):
+    """
+    Estimate board value using a simple 6-tuple feature:
+    top-left 6 tiles linear index (row-major).
+    """
+    idx = 0
+    positions = [(0,0), (0,1), (0,2), (0,3), (1,0), (1,1)]
+    for i, (x, y) in enumerate(positions):
+        val = board[x, y]
+        idx |= (int(np.log2(val)) if val > 0 else 0) << (4 * i)
+    return weights[idx]
+
 def get_action(state, score):
+    weights = load_weights()
+
+    best_action = None
+    best_value = -float('inf')
+
     env = Game2048Env()
-    return random.choice([0, 1, 2, 3]) # Choose a random action
-    
-    # You can submit this random agent to evaluate the performance of a purely random strategy.
+    env.board = state.copy()
+
+    for action in range(4):
+        test_env = Game2048Env()
+        test_env.board = state.copy()
+        moved = test_env.step(action)[1] > score  # or you can check `step()[0] != state`
+
+        if not moved:
+            continue
+
+        value = evaluate_board(test_env.board, weights)
+        if value > best_value:
+            best_value = value
+            best_action = action
+
+    if best_action is None:
+        return random.choice([0, 1, 2, 3])  # fallback
+
+    return best_action
 
 
