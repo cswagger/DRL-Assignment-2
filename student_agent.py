@@ -234,45 +234,88 @@ class Game2048Env(gym.Env):
 import numpy as np
 
 # Load weights from exported file
-def load_weights(path="2048_weights.txt"):
+
+def load_float16_weights(npz_path):
+    data = np.load(npz_path)
     weights = []
-    with open(path) as f:
-        for line in f:
-            if line.startswith("#"): continue
-            weights.append(float(line.strip()))
-    return np.array(weights)
+    for key in sorted(data.files):
+        weights.append(data[key].astype(np.float32))  # Convert to float32 for compatibility
+    return weights
+
 
 # Assume the pattern is 6-tuple {0, 1, 2, 3, 4, 5}
-def evaluate_board(board, weights):
-    """
-    Estimate board value using a simple 6-tuple feature:
-    top-left 6 tiles linear index (row-major).
-    """
-    idx = 0
-    positions = [(0,0), (0,1), (0,2), (0,3), (1,0), (1,1)]
-    for i, (x, y) in enumerate(positions):
-        val = board[x, y]
-        idx |= (int(np.log2(val)) if val > 0 else 0) << (4 * i)
-    return weights[idx]
+def evaluate_board(board, weights_list):
+    patterns = [
+        [(0,0), (0,1), (1,0), (1,1)],
+        [(0,1), (0,2), (1,1), (1,2)],
+        [(0,2), (0,3), (1,2), (1,3)],
+
+        [(1,0), (1,1), (2,0), (2,1)],
+        [(1,1), (1,2), (2,1), (2,2)],
+        [(1,2), (1,3), (2,2), (2,3)],
+
+        [(2,0), (2,1), (3,0), (3,1)],
+        [(2,1), (2,2), (3,1), (3,2)],
+        [(2,2), (2,3), (3,2), (3,3)],
+
+        [(0,0), (0,1), (0,2), (1,1), (1,2)],
+        [(0,1), (0,2), (1,1), (1,2), (2,1)],
+        [(0,0), (1,0), (1,1), (1,2), (1,3)],
+        [(1,0), (1,1), (1,2), (2,1), (2,2)],
+        [(1,1), (1,2), (1,3), (2,2), (2,3)],
+        [(1,1), (1,2), (2,1), (2,2), (3,1)],
+
+        [(2,0), (2,1), (2,2), (3,1), (3,2)],
+        [(2,1), (2,2), (2,3), (3,2), (3,3)],
+        [(2,0), (3,0), (3,1), (3,2), (3,3)],
+        [(1,0), (2,0), (2,1), (3,1), (3,2)],
+        [(1,1), (2,1), (2,2), (3,2), (3,3)],
+        [(1,2), (2,2), (2,3), (3,2), (3,3)],
+        [(2,0), (2,1), (3,0), (3,1), (3,2)],
+    ]
+
+    
+    values = []
+    for w, patt in zip(weights_list, patterns):
+        idx = 0
+        for i, (x, y) in enumerate(patt):
+            val = board[x, y]
+            idx |= (int(np.log2(val)) if val > 0 else 0) << (4 * i)
+        values.append(w[idx])
+    return np.mean(values)
+
+def simulate_afterstate(board, score, action):
+    temp_env = Game2048Env()
+    temp_env.board = board.copy()
+    temp_env.score = score
+
+    moved = False
+    if action == 0:
+        moved = temp_env.move_up()
+    elif action == 1:
+        moved = temp_env.move_down()
+    elif action == 2:
+        moved = temp_env.move_left()
+    elif action == 3:
+        moved = temp_env.move_right()
+
+    if not moved:
+        return None, score
+
+    return temp_env.board.copy(), temp_env.score
 
 def get_action(state, score):
-    weights = load_weights()
+    weights_list = load_float16_weights("output_weight_new_small.npz")
 
     best_action = None
     best_value = -float('inf')
 
-    env = Game2048Env()
-    env.board = state.copy()
-
     for action in range(4):
-        test_env = Game2048Env()
-        test_env.board = state.copy()
-        moved = test_env.step(action)[1] > score  # or you can check `step()[0] != state`
+        after_board, _ = simulate_afterstate(state, score, action)
+        if after_board is None:
+            continue  # illegal move, skip
 
-        if not moved:
-            continue
-
-        value = evaluate_board(test_env.board, weights)
+        value = evaluate_board(after_board, weights_list)
         if value > best_value:
             best_value = value
             best_action = action
@@ -282,4 +325,4 @@ def get_action(state, score):
 
     return best_action
 
-
+print(load_float16_weights("output_weight_new_small.npz"))
