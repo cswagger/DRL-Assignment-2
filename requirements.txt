@@ -3,3 +3,5 @@ requests
 argparse
 torch
 matplotlib
+gdown
+pickle
