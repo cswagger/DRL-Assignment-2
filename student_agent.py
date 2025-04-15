@@ -8,6 +8,69 @@ import matplotlib.pyplot as plt
 import copy
 import random
 import math
+import gdown
+
+
+# Load once at global scope
+pattern_names = [
+    "0145", "1256", "2367", "4589", "569a", "67ab", "89cd", "9ade", "abef",
+    "0123", "4567", "89ab", "cdef", "048c", "159d", "26ae", "37bf",
+    "01256", "12569", "04567", "4569a", "567ab", "569ad", "89ade",
+    "9abef", "8cdef", "489de", "59aef", "6abef", "89cde"
+]
+url = "https://drive.google.com/uc?id=1mFj8aOSs-3EiWoVTQnhOV8UDC_tZNt5y"
+output = "converted_weights.npz"
+
+# Download the file
+gdown.download(url, output, quiet=False, use_cookies=False)
+
+# Now you can load it
+weight_table = np.load(output)
+
+
+def get_isomorphic_indices(pattern):
+    """Return all isomorphic variants of a pattern (rotations + mirror)"""
+    def rotate_90(p):
+        return [ (i % 4) * 4 + (3 - i // 4) for i in p ]
+    def mirror_horizontal(p):
+        return [ (i // 4) * 4 + (3 - i % 4) for i in p ]
+    
+    variants = set()
+    current = pattern[:]
+    for _ in range(4):  # 4 rotations
+        variants.add(tuple(current))
+        variants.add(tuple(mirror_horizontal(current)))
+        current = rotate_90(current)
+    return list(variants)
+
+LOG2_TABLE = np.zeros(65536, dtype=int)
+for i in range(1, len(LOG2_TABLE)):
+    LOG2_TABLE[i] = int(np.log2(i))
+
+# Precompute isomorphics
+isomorphic_index_map = {}
+for name in pattern_names:
+    base_indices = [int(c, 16) for c in name]
+    key_prefix = "4-tuple pattern " if len(base_indices) == 4 else "5-tuple pattern "
+    key = key_prefix + ''.join(f"{x:x}" for x in base_indices)
+    isomorphic_index_map[key] = get_isomorphic_indices(base_indices)
+
+def evaluate_board_fast(board):
+    board_1d = board.flatten()
+    total = 0
+
+    for key, iso_list in isomorphic_index_map.items():
+        arr = weight_table[key]
+        for iso_indices in iso_list:
+            idx = 0
+            for i, board_idx in enumerate(iso_indices):
+                val = board_1d[board_idx]
+                idx |= (LOG2_TABLE[val] if val > 0 else 0) << (4 * i)
+            total += arr[idx]
+
+    return total
+
+
 
 
 class Game2048Env(gym.Env):
@@ -233,80 +296,74 @@ class Game2048Env(gym.Env):
 
 import numpy as np
 
-# Load weights from exported file
-
-def load_float16_weights(npz_path):
-    data = np.load(npz_path)
-    weights = []
-    for key in sorted(data.files):
-        weights.append(data[key].astype(np.float32))  # Convert to float32 for compatibility
-    return weights
 
 
-# Assume the pattern is 6-tuple {0, 1, 2, 3, 4, 5}
-def evaluate_board(board, weights_list):
-    patterns = [
-        [(0,0), (0,1), (1,0), (1,1)],
-        [(0,1), (0,2), (1,1), (1,2)],
-        [(0,2), (0,3), (1,2), (1,3)],
+def compress(row):
+    new_row = row[row != 0]
+    return np.pad(new_row, (0, 4 - len(new_row)), mode='constant')
 
-        [(1,0), (1,1), (2,0), (2,1)],
-        [(1,1), (1,2), (2,1), (2,2)],
-        [(1,2), (1,3), (2,2), (2,3)],
-
-        [(2,0), (2,1), (3,0), (3,1)],
-        [(2,1), (2,2), (3,1), (3,2)],
-        [(2,2), (2,3), (3,2), (3,3)],
-
-        [(0,0), (0,1), (0,2), (1,1), (1,2)],
-        [(0,1), (0,2), (1,1), (1,2), (2,1)],
-        [(0,0), (1,0), (1,1), (1,2), (1,3)],
-        [(1,0), (1,1), (1,2), (2,1), (2,2)],
-        [(1,1), (1,2), (1,3), (2,2), (2,3)],
-        [(1,1), (1,2), (2,1), (2,2), (3,1)],
-
-        [(2,0), (2,1), (2,2), (3,1), (3,2)],
-        [(2,1), (2,2), (2,3), (3,2), (3,3)],
-        [(2,0), (3,0), (3,1), (3,2), (3,3)],
-        [(1,0), (2,0), (2,1), (3,1), (3,2)],
-        [(1,1), (2,1), (2,2), (3,2), (3,3)],
-        [(1,2), (2,2), (2,3), (3,2), (3,3)],
-        [(2,0), (2,1), (3,0), (3,1), (3,2)],
-    ]
-
-    
-    values = []
-    for w, patt in zip(weights_list, patterns):
-        idx = 0
-        for i, (x, y) in enumerate(patt):
-            val = board[x, y]
-            idx |= (int(np.log2(val)) if val > 0 else 0) << (4 * i)
-        values.append(w[idx])
-    return np.mean(values)
+def merge(row, score_container):
+    for i in range(3):
+        if row[i] == row[i + 1] and row[i] != 0:
+            row[i] *= 2
+            row[i + 1] = 0
+            score_container[0] += row[i]
+    return row
 
 def simulate_afterstate(board, score, action):
-    temp_env = Game2048Env()
-    temp_env.board = board.copy()
-    temp_env.score = score
-
+    new_board = board.copy()
     moved = False
-    if action == 0:
-        moved = temp_env.move_up()
-    elif action == 1:
-        moved = temp_env.move_down()
-    elif action == 2:
-        moved = temp_env.move_left()
-    elif action == 3:
-        moved = temp_env.move_right()
+    score_container = [score]
+
+    if action == 0:  # Up
+        for j in range(4):
+            col = new_board[:, j]
+            orig = col.copy()
+            col = compress(col)
+            col = merge(col, score_container)
+            col = compress(col)
+            new_board[:, j] = col
+            if not np.array_equal(orig, col): moved = True
+
+    elif action == 1:  # Down
+        for j in range(4):
+            col = new_board[:, j][::-1]
+            orig = col.copy()
+            col = compress(col)
+            col = merge(col, score_container)
+            col = compress(col)
+            col = col[::-1]
+            new_board[:, j] = col
+            if not np.array_equal(orig[::-1], col): moved = True
+
+    elif action == 2:  # Left
+        for i in range(4):
+            row = new_board[i]
+            orig = row.copy()
+            row = compress(row)
+            row = merge(row, score_container)
+            row = compress(row)
+            new_board[i] = row
+            if not np.array_equal(orig, row): moved = True
+
+    elif action == 3:  # Right
+        for i in range(4):
+            row = new_board[i][::-1]
+            orig = row.copy()
+            row = compress(row)
+            row = merge(row, score_container)
+            row = compress(row)
+            row = row[::-1]
+            new_board[i] = row
+            if not np.array_equal(orig[::-1], row): moved = True
 
     if not moved:
         return None, score
 
-    return temp_env.board.copy(), temp_env.score
+    return new_board, score_container[0]
+
 
 def get_action(state, score):
-    weights_list = load_float16_weights("output_weight_new_small.npz")
-
     best_action = None
     best_value = -float('inf')
 
@@ -315,7 +372,7 @@ def get_action(state, score):
         if after_board is None:
             continue  # illegal move, skip
 
-        value = evaluate_board(after_board, weights_list)
+        value = evaluate_board_fast(after_board)
         if value > best_value:
             best_value = value
             best_action = action
@@ -325,4 +382,16 @@ def get_action(state, score):
 
     return best_action
 
-print(load_float16_weights("output_weight_new_small.npz"))
+# if __name__ == "__main__":
+#     env = Game2048Env()
+#     state = env.reset()
+#     done = False
+
+#     while not done:
+#         # env.render()  # Visualize the board
+#         action = get_action(state, env.score)
+#         state, a, done, b = env.step(action)
+#         print(a)
+
+#     # env.render()
+#     print(f"Game over! Final score: {env.score}")
